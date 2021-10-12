@@ -1,6 +1,8 @@
 package sbctl
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +11,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+
+	"github.com/foxboron/go-uefi/efi"
+	"github.com/foxboron/go-uefi/efi/signature"
 )
 
 // Functions that doesn't fit anywhere else
@@ -33,7 +38,6 @@ var ErrNoESP = errors.New("failed to find EFI system partition")
 
 // Slightly more advanced check
 func GetESP() (string, error) {
-
 	for _, env := range []string{"SYSTEMD_ESP_PATH", "ESP_PATH"} {
 		envEspPath, found := os.LookupEnv(env)
 		if found {
@@ -226,4 +230,36 @@ func CheckSbctlInstallation(path string) bool {
 		return false
 	}
 	return true
+}
+
+func GetDualBoot() bool {
+	var state uint
+	kekList, err := efi.GetKEK()
+	if err != nil {
+		return false
+	}
+	for _, e := range kekList {
+		if e.SignatureType == signature.CERT_X509_GUID {
+			sum := sha256.Sum256(e.Signatures[0].Data)
+			if bytes.Equal(sum[:], MicrosoftKEKHash) {
+				state++
+			}
+		}
+	}
+	dbList, err := efi.Getdb()
+	if err != nil {
+		return false
+	}
+	for _, e := range dbList {
+		if e.SignatureType == signature.CERT_X509_GUID {
+			sum := sha256.Sum256(e.Signatures[0].Data)
+			if bytes.Equal(sum[:], MicrosoftDBProduction) {
+				state++
+			}
+			if bytes.Equal(sum[:], MicrosoftDBUEFI) {
+				state++
+			}
+		}
+	}
+	return state == 3
 }

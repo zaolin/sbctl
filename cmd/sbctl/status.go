@@ -21,6 +21,7 @@ type Status struct {
 	GUID       string `json:"guid"`
 	SetupMode  bool   `json:"setup_mode"`
 	SecureBoot bool   `json:"secure_boot"`
+	DualBoot   bool   `json:"dual_boot"`
 }
 
 func NewStatus() *Status {
@@ -29,6 +30,7 @@ func NewStatus() *Status {
 		GUID:       "",
 		SetupMode:  false,
 		SecureBoot: false,
+		DualBoot:   false,
 	}
 }
 
@@ -53,6 +55,12 @@ func PrintStatus(s *Status) {
 	} else {
 		logging.NotOk("Disabled")
 	}
+	logging.Print("Dual Boot:\t")
+	if s.DualBoot {
+		logging.Ok("Enabled")
+	} else {
+		logging.NotOk("Disabled")
+	}
 }
 
 func RunStatus(cmd *cobra.Command, args []string) error {
@@ -73,6 +81,9 @@ func RunStatus(cmd *cobra.Command, args []string) error {
 	}
 	if efi.GetSecureBoot() {
 		stat.SecureBoot = true
+	}
+	if sbctl.GetDualBoot() {
+		stat.DualBoot = true
 	}
 	if cmdOptions.JsonOutput {
 		JsonOut(stat)

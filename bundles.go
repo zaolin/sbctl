@@ -63,6 +63,7 @@ func BundleIter(fn func(s *Bundle) error) error {
 
 func GetEfistub() string {
 	candidates := []string{
+		"/usr/lib/systemd/boot/efi/linuxx64.efi.stub",
 		"/lib/systemd/boot/efi/linuxx64.efi.stub",
 		"/lib/gummiboot/linuxx64.efi.stub",
 	}

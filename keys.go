@@ -9,6 +9,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io/ioutil"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -22,6 +23,18 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+var (
+	MicrosoftKEKHash = []byte{0xa1, 0x11, 0x7f, 0x51, 0x6a, 0x32, 0xce, 0xfc, 0xba, 0x3f, 0x2d,
+		0x1a, 0xce, 0x10, 0xa8, 0x79, 0x72, 0xfd, 0x6b, 0xbe, 0x8f, 0xe0, 0xd0,
+		0xb9, 0x96, 0xe0, 0x9e, 0x65, 0xd8, 0x02, 0xa5, 0x03}
+	MicrosoftDBProduction = []byte{0xe8, 0xe9, 0x5f, 0x07, 0x33, 0xa5, 0x5e, 0x8b, 0xad, 0x7b, 0xe0, 0xa1,
+		0x41, 0x3e, 0xe2, 0x3c, 0x51, 0xfc, 0xea, 0x64, 0xb3, 0xc8, 0xfa,
+		0x6a, 0x78, 0x69, 0x35, 0xfd, 0xdc, 0xc7, 0x19, 0x61}
+	MicrosoftDBUEFI = []byte{0x48, 0xe9, 0x9b, 0x99, 0x1f, 0x57, 0xfc, 0x52, 0xf7, 0x61, 0x49, 0x59,
+		0x9b, 0xff, 0x0a, 0x58, 0xc4, 0x71, 0x54, 0x22, 0x9b, 0x9f, 0x8d,
+		0x60, 0x3a, 0xc4, 0x0d, 0x35, 0x00, 0x24, 0x85, 0x07}
+)
+
 var RSAKeySize = 4096
 
 var (
@@ -33,8 +46,11 @@ var (
 	KEKCert      = filepath.Join(KeysPath, "KEK", "KEK.pem")
 	DBKey        = filepath.Join(KeysPath, "db", "db.key")
 	DBCert       = filepath.Join(KeysPath, "db", "db.pem")
+	DBXKey       = filepath.Join(KeysPath, "dbx", "dbx.key")
+	DBXCert      = filepath.Join(KeysPath, "dbx", "dbx.pem")
 
-	DBPath = filepath.Join(DatabasePath, "files.db")
+	DBPath  = filepath.Join(DatabasePath, "files.db")
+	DBXPath = filepath.Join(DatabasePath, "files.dbx")
 
 	GUIDPath = filepath.Join(DatabasePath, "GUID")
 )
@@ -43,6 +59,9 @@ var (
 func CanVerifyFiles() error {
 	if err := unix.Access(DBCert, unix.R_OK); err != nil {
 		return fmt.Errorf("couldn't access %s: %w", DBCert, err)
+	}
+	if err := unix.Access(DBXCert, unix.R_OK); err != nil {
+		return fmt.Errorf("couldn't access %s: %w", DBXCert, err)
 	}
 	return nil
 }
@@ -94,6 +113,40 @@ func SaveKey(k []byte, file string) error {
 	return nil
 }
 
+func ExportKeys(outputDir string) error {
+	pkList, err := efi.GetPK()
+	if err != nil {
+		return err
+	}
+	for it, e := range pkList {
+		if e.SignatureType == signature.CERT_X509_GUID {
+			path := filepath.Join(outputDir, "PK_"+fmt.Sprintf("%d", it)+".pem")
+			ioutil.WriteFile(path, e.Signatures[0].Data, 0644)
+		}
+	}
+	kekList, err := efi.GetKEK()
+	if err != nil {
+		return err
+	}
+	for it, e := range kekList {
+		if e.SignatureType == signature.CERT_X509_GUID {
+			path := filepath.Join(outputDir, "KEK_"+fmt.Sprintf("%d", it)+".pem")
+			ioutil.WriteFile(path, e.Signatures[0].Data, 0644)
+		}
+	}
+	dbList, err := efi.Getdb()
+	if err != nil {
+		return err
+	}
+	for it, e := range dbList {
+		if e.SignatureType == signature.CERT_X509_GUID {
+			path := filepath.Join(outputDir, "DB_"+fmt.Sprintf("%d", it)+".pem")
+			ioutil.WriteFile(path, e.Signatures[0].Data, 0644)
+		}
+	}
+	return nil
+}
+
 func Enroll(uuid util.EFIGUID, cert, signerKey, signerPem []byte, efivar string) error {
 	c := signature.NewSignatureList(signature.CERT_X509_GUID)
 	c.AppendBytes(uuid, cert)
@@ -114,16 +167,79 @@ func Enroll(uuid util.EFIGUID, cert, signerKey, signerPem []byte, efivar string)
 	return efi.WriteEFIVariable(efivar, signedBuf)
 }
 
-func KeySync(guid util.EFIGUID, keydir string) error {
+func EnrollDatabase(list []*signature.SignatureList, signerKey, signerPem []byte, efivar string) error {
+	d := signature.SignatureDatabase{}
+	for _, e := range list {
+		d.AppendList(e)
+	}
+	buf := new(bytes.Buffer)
+	signature.WriteSignatureDatabase(buf, d)
+	key, err := util.ReadKey(signerKey)
+	if err != nil {
+		return nil
+	}
+	crt, err := util.ReadCert(signerPem)
+	if err != nil {
+		return nil
+	}
+	signedBuf, err := efi.SignEFIVariable(key, crt, efivar, buf.Bytes())
+	if err != nil {
+		return err
+	}
+	return efi.WriteEFIVariable(efivar, signedBuf)
+}
+
+func UpdateDBX(guid util.EFIGUID, keydir string) error {
+	KEKKey, _ := os.ReadFile(filepath.Join(keydir, "KEK", "KEK.key"))
+	KEKPem, _ := os.ReadFile(filepath.Join(keydir, "KEK", "KEK.pem"))
+	dbxPem, err := os.ReadFile(filepath.Join(keydir, "dbx", "dbx.pem"))
+	if err != nil {
+		return err
+	}
+	if err := Enroll(guid, dbxPem, KEKKey, KEKPem, "dbx"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func KeySync(guid util.EFIGUID, keydir string, msKEK bool) error {
 	PKKey, _ := os.ReadFile(filepath.Join(keydir, "PK", "PK.key"))
 	PKPem, _ := os.ReadFile(filepath.Join(keydir, "PK", "PK.pem"))
 	KEKKey, _ := os.ReadFile(filepath.Join(keydir, "KEK", "KEK.key"))
 	KEKPem, _ := os.ReadFile(filepath.Join(keydir, "KEK", "KEK.pem"))
+	MSKEKPem, _ := os.ReadFile(filepath.Join(keydir, "MSKEK", "KEK.pem"))
+	MSDB1Pem, _ := os.ReadFile(filepath.Join(keydir, "MSDB", "DB1.pem"))
+	MSDB2Pem, _ := os.ReadFile(filepath.Join(keydir, "MSDB", "DB2.pem"))
 	dbPem, _ := os.ReadFile(filepath.Join(keydir, "db", "db.pem"))
-	if err := Enroll(guid, dbPem, KEKKey, KEKPem, "db"); err != nil {
-		return err
+	dbxPem, _ := os.ReadFile(filepath.Join(keydir, "dbx", "dbx.pem"))
+	if msKEK {
+		dbList := make([]*signature.SignatureList, 3)
+		dbList[0] = signature.NewSignatureList(signature.CERT_X509_GUID)
+		dbList[1] = signature.NewSignatureList(signature.CERT_X509_GUID)
+		dbList[2] = signature.NewSignatureList(signature.CERT_X509_GUID)
+		dbList[0].AppendBytes(guid, dbPem)
+		dbList[1].AppendBytes(guid, MSDB1Pem)
+		dbList[2].AppendBytes(guid, MSDB2Pem)
+		if err := EnrollDatabase(dbList, KEKKey, KEKPem, "db"); err != nil {
+			return err
+		}
+		kekList := make([]*signature.SignatureList, 2)
+		kekList[0] = signature.NewSignatureList(signature.CERT_X509_GUID)
+		kekList[1] = signature.NewSignatureList(signature.CERT_X509_GUID)
+		kekList[0].AppendBytes(guid, KEKPem)
+		kekList[1].AppendBytes(guid, MSKEKPem)
+		if err := EnrollDatabase(kekList, PKKey, PKPem, "KEK"); err != nil {
+			return err
+		}
+	} else {
+		if err := Enroll(guid, dbPem, KEKKey, KEKPem, "db"); err != nil {
+			return err
+		}
+		if err := Enroll(guid, KEKPem, PKKey, PKPem, "KEK"); err != nil {
+			return err
+		}
 	}
-	if err := Enroll(guid, KEKPem, PKKey, PKPem, "KEK"); err != nil {
+	if err := Enroll(guid, dbxPem, KEKKey, KEKPem, "dbx"); err != nil {
 		return err
 	}
 	if err := Enroll(guid, PKPem, PKKey, PKPem, "PK"); err != nil {
@@ -253,12 +369,10 @@ var SecureBootKeys = []struct {
 		Key:         "db",
 		Description: "Database Key",
 	},
-	// Haven't used this yet so WIP
-	// {
-	// 	Key:         "dbx",
-	// 	Description: "Forbidden Database Key",
-	// 	SignedWith:  "KEK",
-	// },
+	{
+		Key:         "dbx",
+		Description: "Forbidden Database Key",
+	},
 }
 
 // Check if we have already intialized keys in the given output directory
@@ -277,6 +391,7 @@ func CheckIfKeysInitialized(output string) bool {
 //	* Platform Key (PK)
 //	* Key Exchange Key (KEK)
 //	* db (database)
+//	* dbx (database)
 func InitializeSecureBootKeys(output string) error {
 	if CheckIfKeysInitialized(output) {
 		return nil

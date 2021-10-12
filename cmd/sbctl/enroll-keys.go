@@ -10,6 +10,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var (
+	msKEK bool
+)
+
 func CheckImmutable() error {
 	var isImmutable bool
 	for _, file := range sbctl.EfivarFSFiles {
@@ -42,7 +46,7 @@ var enrollKeysCmd = &cobra.Command{
 		}
 		guid := util.StringToGUID(uuid.String())
 		logging.Print("Enrolling keys to EFI variables...")
-		if err := sbctl.KeySync(*guid, sbctl.KeysPath); err != nil {
+		if err := sbctl.KeySync(*guid, sbctl.KeysPath, msKEK); err != nil {
 			logging.NotOk("")
 			return fmt.Errorf("couldn't sync keys: %w", err)
 		}
@@ -51,7 +55,14 @@ var enrollKeysCmd = &cobra.Command{
 	},
 }
 
+func enrollKeysCmdFlags(cmd *cobra.Command) {
+	f := cmd.Flags()
+	f.BoolVarP(&msKEK, "microsoft", "m", false, "include microsoft keys into key enrollment")
+	f.BoolVarP(&msKEK, "oem", "o", false, "include oem keys into key enrollment")
+}
+
 func init() {
+	enrollKeysCmdFlags(enrollKeysCmd)
 	CliCommands = append(CliCommands, cliCommand{
 		Cmd: enrollKeysCmd,
 	})
